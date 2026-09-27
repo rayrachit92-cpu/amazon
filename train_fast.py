@@ -15,6 +15,9 @@ from src.common import (
     load_ground_truth,
     macro_f05,
     tuple_to_record,
+    norm_name,
+    norm_address,
+    norm_text,
 )
 
 
@@ -39,23 +42,39 @@ def get_record(conn, entity_id):
     return tuple_to_record(row)
 
 
-def convert_candidate(c):
+def prepare_s1_record(row):
     """
-    Convert a candidate returned by fetch_candidates()
-    into a normal Python dictionary.
+    Normalize Source-1 fields exactly the same
+    way as records stored in SQLite.
     """
 
-    if isinstance(c, dict):
-        return c
+    return {
+        "entity_id": row["entity_id"],
+        "name_n": norm_name(
+            row["business_name"]
+        ),
+        "addr_n": norm_address(
+            row["business_address"]
+        ),
+        "country_n": norm_text(
+            row["country"]
+        ),
+    }
 
-    if hasattr(c, "keys"):
+
+def convert_candidate(candidate):
+
+    if isinstance(candidate, dict):
+        return candidate
+
+    if hasattr(candidate, "keys"):
         return {
-            key: c[key]
-            for key in c.keys()
+            key: candidate[key]
+            for key in candidate.keys()
         }
 
     try:
-        return tuple_to_record(c)
+        return tuple_to_record(candidate)
     except Exception:
         return None
 
@@ -67,6 +86,7 @@ def make_pairs(
     db3,
     neg_per_source=15
 ):
+
     X = []
     y = []
     pair_ids = []
@@ -78,36 +98,32 @@ def make_pairs(
         1
     ):
 
-        s1 = {
-            "entity_id": row["entity_id"],
-            "name_n": row["business_name"],
-            "addr_n": row["business_address"],
-            "country_n": row["country"],
-        }
+        s1 = prepare_s1_record(row)
 
         s1_id = s1["entity_id"]
 
         true_ids = set(
-            gt.get(s1_id, set())
+            gt.get(
+                s1_id,
+                set()
+            )
         )
 
-        # --------------------------------------------------
-        # Store positive and negative records separately
-        # --------------------------------------------------
-
         positive_records = {}
+
         negative_records = {
             "S2": {},
             "S3": {}
         }
 
         # --------------------------------------------------
-        # 1. Directly retrieve every TRUE positive
+        # Directly retrieve TRUE matches
         # --------------------------------------------------
 
         for entity_id in true_ids:
 
             if entity_id.startswith("S2-"):
+
                 rec = get_record(
                     db2,
                     entity_id
@@ -119,6 +135,7 @@ def make_pairs(
                     ] = rec
 
             elif entity_id.startswith("S3-"):
+
                 rec = get_record(
                     db3,
                     entity_id
@@ -130,7 +147,7 @@ def make_pairs(
                     ] = rec
 
         # --------------------------------------------------
-        # 2. Generate candidates for hard negatives
+        # Generate hard negative candidates
         # --------------------------------------------------
 
         for source_name, conn in [
@@ -139,11 +156,13 @@ def make_pairs(
         ]:
 
             try:
+
                 candidates = fetch_candidates(
                     conn,
                     s1,
                     limit=100
                 )
+
             except Exception:
                 candidates = []
 
@@ -169,7 +188,6 @@ def make_pairs(
                     cid
                 ] = rec
 
-            # Keep only non-matches
             negative_ids = [
                 cid
                 for cid in candidate_map
@@ -189,16 +207,20 @@ def make_pairs(
                 ][cid] = candidate_map[cid]
 
         # --------------------------------------------------
-        # 3. Add all positive pairs
+        # Add positive examples
         # --------------------------------------------------
 
-        for entity_id, rec in positive_records.items():
+        for entity_id, rec in (
+            positive_records.items()
+        ):
 
             try:
+
                 features = feature_row(
                     s1,
                     rec
                 )
+
             except Exception:
                 continue
 
@@ -213,7 +235,7 @@ def make_pairs(
             )
 
         # --------------------------------------------------
-        # 4. Add negative pairs
+        # Add negative examples
         # --------------------------------------------------
 
         for source_name in [
@@ -228,10 +250,12 @@ def make_pairs(
             ):
 
                 try:
+
                     features = feature_row(
                         s1,
                         rec
                     )
+
                 except Exception:
                     continue
 
@@ -285,30 +309,31 @@ def evaluate(
     threshold=0.50
 ):
 
-    print("\nRunning validation...")
+    print(
+        "\nRunning validation..."
+    )
 
     predictions = {}
 
-    total = len(source1_df)
+    total = len(
+        source1_df
+    )
 
     for pos, (_, row) in enumerate(
         source1_df.iterrows(),
         1
     ):
 
-        s1 = {
-            "entity_id": row["entity_id"],
-            "name_n": row["business_name"],
-            "addr_n": row["business_address"],
-            "country_n": row["country"],
-        }
+        s1 = prepare_s1_record(
+            row
+        )
 
         s1_id = s1["entity_id"]
 
         all_candidates = {}
 
         # --------------------------------------------------
-        # Get S2 + S3 candidates
+        # Get candidates from S2 and S3
         # --------------------------------------------------
 
         for source_name, conn in [
@@ -317,11 +342,13 @@ def evaluate(
         ]:
 
             try:
+
                 candidates = fetch_candidates(
                     conn,
                     s1,
                     limit=100
                 )
+
             except Exception:
                 candidates = []
 
@@ -339,6 +366,7 @@ def evaluate(
                 )
 
                 if cid:
+
                     all_candidates[
                         cid
                     ] = rec
@@ -363,16 +391,19 @@ def evaluate(
             for rec in records:
 
                 try:
+
                     features.append(
                         feature_row(
                             s1,
                             rec
                         )
                     )
+
                 except Exception:
+
                     features.append(
-                        [0.0] *
-                        len(FEATURE_NAMES)
+                        [0.0]
+                        * len(FEATURE_NAMES)
                     )
 
             X = np.asarray(
@@ -384,7 +415,9 @@ def evaluate(
                 X
             )[:, 1]
 
-            predictions[s1_id] = {
+            predictions[
+                s1_id
+            ] = {
                 cid
                 for cid, score in zip(
                     ids,
@@ -395,7 +428,9 @@ def evaluate(
 
         else:
 
-            predictions[s1_id] = set()
+            predictions[
+                s1_id
+            ] = set()
 
         if (
             pos % 25 == 0
@@ -409,12 +444,7 @@ def evaluate(
 
     score = macro_f05(
         predictions,
-        gt,
-        list(
-            source1_df[
-                "entity_id"
-            ]
-        )
+        gt
     )
 
     return score
@@ -453,9 +483,11 @@ def main():
     )
 
     print("=" * 60)
+
     print(
         "FAST BUSINESS ENTITY RESOLUTION TRAINING"
     )
+
     print("=" * 60)
 
     # ------------------------------------------------------
@@ -493,7 +525,7 @@ def main():
     )
 
     # ------------------------------------------------------
-    # Sample entities
+    # Sample S1 entities
     # ------------------------------------------------------
 
     sample_size = min(
@@ -508,7 +540,6 @@ def main():
         drop=True
     )
 
-    # 80/20 entity-level split
     split = int(
         len(sample) * 0.8
     )
@@ -600,18 +631,19 @@ def main():
     )
 
     # ------------------------------------------------------
-    # Safety check
+    # Safety checks
     # ------------------------------------------------------
 
     if positive_count == 0:
+
         raise RuntimeError(
             "No positive training examples."
         )
 
     if negative_count == 0:
+
         raise RuntimeError(
-            "No negative training examples. "
-            "Candidate generation needs investigation."
+            "No negative training examples."
         )
 
     scale_pos_weight = min(
@@ -629,7 +661,7 @@ def main():
     )
 
     # ------------------------------------------------------
-    # Train XGBoost
+    # XGBoost
     # ------------------------------------------------------
 
     print(
@@ -686,7 +718,7 @@ def main():
     )
 
     # ------------------------------------------------------
-    # Save
+    # Save model
     # ------------------------------------------------------
 
     os.makedirs(

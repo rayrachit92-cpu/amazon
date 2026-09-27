@@ -238,6 +238,13 @@ def main():
 
     rng.shuffle(ids)
 
+if args.sample_size is not None:
+    ids = ids[:args.sample_size]
+    print(
+        "Using sample size:",
+        len(ids)
+    )
+
     split = int(
         len(ids) * 0.80
     )

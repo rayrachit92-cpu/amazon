@@ -64,16 +64,23 @@ def norm_text(value):
     if not value:
         return ""
 
-    value = unicodedata.normalize("NFKD", value)
+    value = unicodedata.normalize(
+        "NFKD",
+        value
+    )
 
     value = "".join(
-        c for c in value
+        c
+        for c in value
         if not unicodedata.combining(c)
     )
 
     value = value.lower()
 
-    value = value.replace("&", " and ")
+    value = value.replace(
+        "&",
+        " and "
+    )
 
     value = re.sub(
         r"[^a-z0-9\s]",
@@ -109,7 +116,10 @@ def norm_address(value):
 
     for token in text.split():
         output.append(
-            ADDRESS_MAP.get(token, token)
+            ADDRESS_MAP.get(
+                token,
+                token
+            )
         )
 
     return " ".join(output)
@@ -137,7 +147,10 @@ def prepare_chunk(df):
     return df
 
 
-def read_source(path, chunksize=100_000):
+def read_source(
+    path,
+    chunksize=100_000
+):
 
     return pd.read_csv(
         path,
@@ -149,27 +162,43 @@ def read_source(path, chunksize=100_000):
     )
 
 
-def build_db(tsv_path, db_path):
+def build_db(
+    tsv_path,
+    db_path
+):
 
     db_path = Path(db_path)
 
     if db_path.exists():
-        print("Database already exists:", db_path)
+        print(
+            "Database already exists:",
+            db_path
+        )
         return
 
-    print("Creating:", db_path)
+    print(
+        "Creating:",
+        db_path
+    )
 
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(
+        db_path
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         PRAGMA journal_mode=WAL
-    """)
+        """
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         PRAGMA synchronous=NORMAL
-    """)
+        """
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         CREATE TABLE records (
             entity_id TEXT PRIMARY KEY,
             business_name TEXT,
@@ -179,11 +208,16 @@ def build_db(tsv_path, db_path):
             addr_n TEXT,
             country_n TEXT
         )
-    """)
+        """
+    )
 
-    for chunk in read_source(tsv_path):
+    for chunk in read_source(
+        tsv_path
+    ):
 
-        chunk = prepare_chunk(chunk)
+        chunk = prepare_chunk(
+            chunk
+        )
 
         rows = chunk[
             [
@@ -210,43 +244,84 @@ def build_db(tsv_path, db_path):
 
         conn.commit()
 
-    conn.execute("""
+    conn.execute(
+        """
         CREATE INDEX idx_name_country
         ON records(name_n, country_n)
-    """)
+        """
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         CREATE INDEX idx_addr_country
         ON records(addr_n, country_n)
-    """)
+        """
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         CREATE INDEX idx_name_prefix
-        ON records(substr(name_n, 1, 4), country_n)
-    """)
+        ON records(
+            substr(name_n, 1, 4),
+            country_n
+        )
+        """
+    )
 
-    conn.execute("""
+    conn.execute(
+        """
         CREATE INDEX idx_addr_prefix
-        ON records(substr(addr_n, 1, 8), country_n)
-    """)
+        ON records(
+            substr(addr_n, 1, 8),
+            country_n
+        )
+        """
+    )
 
     conn.commit()
     conn.close()
 
-    print("Finished:", db_path)
+    print(
+        "Finished:",
+        db_path
+    )
 
 
-def fetch_candidates(conn, row, limit=500):
+# ==========================================================
+# CANDIDATE GENERATION
+# ==========================================================
+
+def fetch_candidates(
+    conn,
+    row,
+    limit=500
+):
 
     seen = set()
 
-    name = row["name_n"]
-    addr = row["addr_n"]
-    country = row["country_n"]
+    name = row.get(
+        "name_n",
+        ""
+    )
+
+    addr = row.get(
+        "addr_n",
+        ""
+    )
+
+    country = row.get(
+        "country_n",
+        ""
+    )
 
     queries = []
 
+    # ------------------------------------------------------
+    # 1. Exact normalized name
+    # ------------------------------------------------------
+
     if name:
+
         queries.append(
             (
                 """
@@ -256,11 +331,20 @@ def fetch_candidates(conn, row, limit=500):
                 AND country_n = ?
                 LIMIT ?
                 """,
-                (name, country, limit)
+                (
+                    name,
+                    country,
+                    100
+                )
             )
         )
 
+    # ------------------------------------------------------
+    # 2. Exact normalized address
+    # ------------------------------------------------------
+
     if addr:
+
         queries.append(
             (
                 """
@@ -270,54 +354,140 @@ def fetch_candidates(conn, row, limit=500):
                 AND country_n = ?
                 LIMIT ?
                 """,
-                (addr, country, limit)
+                (
+                    addr,
+                    country,
+                    100
+                )
             )
         )
 
-    if name[:4]:
+    # ------------------------------------------------------
+    # 3. Name prefix blocks
+    # ------------------------------------------------------
+
+    for prefix_len in (
+        4,
+        6,
+        8
+    ):
+
+        if len(name) >= prefix_len:
+
+            queries.append(
+                (
+                    """
+                    SELECT *
+                    FROM records
+                    WHERE substr(
+                        name_n,
+                        1,
+                        ?
+                    ) = ?
+                    AND country_n = ?
+                    LIMIT ?
+                    """,
+                    (
+                        prefix_len,
+                        name[:prefix_len],
+                        country,
+                        100
+                    )
+                )
+            )
+
+    # ------------------------------------------------------
+    # 4. Address prefix blocks
+    # ------------------------------------------------------
+
+    for prefix_len in (
+        8,
+        12,
+        16
+    ):
+
+        if len(addr) >= prefix_len:
+
+            queries.append(
+                (
+                    """
+                    SELECT *
+                    FROM records
+                    WHERE substr(
+                        addr_n,
+                        1,
+                        ?
+                    ) = ?
+                    AND country_n = ?
+                    LIMIT ?
+                    """,
+                    (
+                        prefix_len,
+                        addr[:prefix_len],
+                        country,
+                        100
+                    )
+                )
+            )
+
+    # ------------------------------------------------------
+    # 5. First business-name token
+    # ------------------------------------------------------
+
+    first_name = (
+        name.split()[0]
+        if name
+        else ""
+    )
+
+    if first_name:
+
         queries.append(
             (
                 """
                 SELECT *
                 FROM records
-                WHERE substr(name_n,1,4) = ?
+                WHERE name_n LIKE ?
                 AND country_n = ?
                 LIMIT ?
                 """,
-                (name[:4], country, limit)
+                (
+                    first_name + "%",
+                    country,
+                    100
+                )
             )
         )
 
-    if addr[:8]:
-        queries.append(
-            (
-                """
-                SELECT *
-                FROM records
-                WHERE substr(addr_n,1,8) = ?
-                AND country_n = ?
-                LIMIT ?
-                """,
-                (addr[:8], country, limit)
-            )
-        )
+    # ------------------------------------------------------
+    # Execute blocks independently
+    # ------------------------------------------------------
 
     for sql, params in queries:
 
-        for record in conn.execute(sql, params):
+        for record in conn.execute(
+            sql,
+            params
+        ):
 
             entity_id = record[0]
 
             if entity_id in seen:
                 continue
 
-            seen.add(entity_id)
+            seen.add(
+                entity_id
+            )
 
             yield record
 
             if len(seen) >= limit:
                 return
 
+
+# ==========================================================
+# RECORD CONVERSION
+# ==========================================================
 
 def tuple_to_record(record):
 
@@ -332,12 +502,18 @@ def tuple_to_record(record):
     }
 
 
+# ==========================================================
+# FEATURE FUNCTIONS
+# ==========================================================
+
 def token_set(value):
 
     if not value:
         return set()
 
-    return set(value.split())
+    return set(
+        value.split()
+    )
 
 
 def jaccard(a, b):
@@ -351,7 +527,11 @@ def jaccard(a, b):
     if not A or not B:
         return 0.0
 
-    return len(A & B) / len(A | B)
+    return len(
+        A & B
+    ) / len(
+        A | B
+    )
 
 
 def containment(a, b):
@@ -371,7 +551,10 @@ def containment(a, b):
 def digit_set(value):
 
     return set(
-        re.findall(r"\d+", value or "")
+        re.findall(
+            r"\d+",
+            value or ""
+        )
     )
 
 
@@ -386,12 +569,20 @@ def digit_overlap(a, b):
     if not A or not B:
         return 0.0
 
-    return len(A & B) / len(A | B)
+    return len(
+        A & B
+    ) / len(
+        A | B
+    )
 
 
 def first_token(value):
 
-    return value.split()[0] if value else ""
+    return (
+        value.split()[0]
+        if value
+        else ""
+    )
 
 
 def feature_row(a, b):
@@ -422,76 +613,144 @@ def feature_row(a, b):
             and bool(aa)
         ),
 
-        fuzz.ratio(an, bn) / 100,
+        fuzz.ratio(
+            an,
+            bn
+        ) / 100,
 
-        fuzz.WRatio(an, bn) / 100,
+        fuzz.WRatio(
+            an,
+            bn
+        ) / 100,
 
-        fuzz.token_sort_ratio(an, bn) / 100,
+        fuzz.token_sort_ratio(
+            an,
+            bn
+        ) / 100,
 
-        fuzz.token_set_ratio(an, bn) / 100,
+        fuzz.token_set_ratio(
+            an,
+            bn
+        ) / 100,
 
-        jaccard(an, bn),
+        jaccard(
+            an,
+            bn
+        ),
 
-        containment(an, bn),
+        containment(
+            an,
+            bn
+        ),
 
-        fuzz.ratio(aa, ba) / 100,
+        fuzz.ratio(
+            aa,
+            ba
+        ) / 100,
 
-        fuzz.WRatio(aa, ba) / 100,
+        fuzz.WRatio(
+            aa,
+            ba
+        ) / 100,
 
-        fuzz.token_sort_ratio(aa, ba) / 100,
+        fuzz.token_sort_ratio(
+            aa,
+            ba
+        ) / 100,
 
-        fuzz.token_set_ratio(aa, ba) / 100,
+        fuzz.token_set_ratio(
+            aa,
+            ba
+        ) / 100,
 
-        jaccard(aa, ba),
+        jaccard(
+            aa,
+            ba
+        ),
 
-        containment(aa, ba),
+        containment(
+            aa,
+            ba
+        ),
 
-        digit_overlap(aa, ba),
+        digit_overlap(
+            aa,
+            ba
+        ),
 
         float(
             first_token(an)
             == first_token(bn)
-            and bool(first_token(an))
+            and bool(
+                first_token(an)
+            )
         ),
 
         float(
-            an[:4] == bn[:4]
+            an[:4]
+            == bn[:4]
             and bool(an[:4])
         ),
 
-        float(len(an) == len(bn)),
+        float(
+            len(an)
+            == len(bn)
+        ),
 
-        float(len(aa) == len(ba))
+        float(
+            len(aa)
+            == len(ba)
+        )
     ]
 
 
 FEATURE_NAMES = [
+
     "country_exact",
+
     "name_exact",
+
     "address_exact",
 
     "name_ratio",
+
     "name_wratio",
+
     "name_token_sort",
+
     "name_token_set",
+
     "name_jaccard",
+
     "name_containment",
 
     "address_ratio",
+
     "address_wratio",
+
     "address_token_sort",
+
     "address_token_set",
+
     "address_jaccard",
+
     "address_containment",
+
     "digit_overlap",
 
     "first_name_token_exact",
+
     "name_prefix4_exact",
 
     "name_length_equal",
+
     "address_length_equal"
 ]
 
+
+# ==========================================================
+# GROUND TRUTH
+# ==========================================================
 
 def load_ground_truth(path):
 
@@ -515,16 +774,24 @@ def load_ground_truth(path):
 
                 ids = {
                     x.strip()
-                    for x in row.matched_entity_ids.split(",")
+                    for x in (
+                        row.matched_entity_ids
+                        .split(",")
+                    )
                     if x.strip()
                 }
 
-            result[row.source1_entity_id] = ids
+            result[
+                row.source1_entity_id
+            ] = ids
 
     return result
 
 
-def f05(predicted, truth):
+def f05(
+    predicted,
+    truth
+):
 
     tp = len(
         predicted & truth
@@ -541,7 +808,12 @@ def f05(predicted, truth):
     precision = (
         tp / (tp + fp)
         if tp + fp
-        else 1.0 if not predicted and not truth else 0.0
+        else (
+            1.0
+            if not predicted
+            and not truth
+            else 0.0
+        )
     )
 
     recall = (
@@ -550,21 +822,35 @@ def f05(predicted, truth):
         else 1.0
     )
 
-    if precision == 0 and recall == 0:
+    if (
+        precision == 0
+        and recall == 0
+    ):
         return 0.0
 
     return (
-        1.25 * precision * recall
+        1.25
+        * precision
+        * recall
         /
-        (0.25 * precision + recall)
+        (
+            0.25
+            * precision
+            + recall
+        )
     )
 
 
-def macro_f05(predictions, truth):
+def macro_f05(
+    predictions,
+    truth
+):
 
     scores = []
 
-    for entity_id, actual in truth.items():
+    for entity_id, actual in (
+        truth.items()
+    ):
 
         predicted = predictions.get(
             entity_id,
@@ -572,7 +858,10 @@ def macro_f05(predictions, truth):
         )
 
         scores.append(
-            f05(predicted, actual)
+            f05(
+                predicted,
+                actual
+            )
         )
 
     if not scores:

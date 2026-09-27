@@ -48,7 +48,7 @@ def main():
     )
 
     with open(
-        work / "model_config_fast.json"
+        work / "model_config.json"
     ) as file:
 
         config = json.load(file)
@@ -65,7 +65,7 @@ def main():
     model = XGBClassifier()
 
     model.load_model(
-        work / "entity_matcher_fast.json"
+        work / "entity_matcher.json"
     )
 
     print("\n========== BUILD TEST INDEXES ==========\n")
